@@ -1,278 +1,219 @@
-﻿using System.Text.Json;
-
+﻿using System.CodeDom.Compiler;
+using System.ComponentModel;
+using System.Diagnostics.Tracing;
+using System.IO;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 namespace MDC
 {
-    using static System.Net.Mime.MediaTypeNames;
-    using LettersCount = Dictionary<char, long>;
     internal class MarkovDeepChain
     {
-        private struct Pair
-        {
-            public char letter;
-            public char following;
-            public int depth;
+        readonly private List<string> words = new();
 
-            public Pair(char letter, char following, int depth)
+        internal class ProbabilityPair
+        {
+            readonly private ushort wordId;
+            readonly private ushort nextWordId;
+            readonly private byte depthLevel;
+            private uint count;
+
+            public ProbabilityPair(ushort wordId, ushort nextWordId, byte depthLevel, uint count)
             {
-                this.letter = letter;
-                this.following = following;
-                this.depth = depth;
+                this.wordId = wordId;
+                this.nextWordId = nextWordId;
+                this.depthLevel = depthLevel;
+                this.count = count;
             }
 
-            public void Print()
+            public ushort WordId { get => wordId; }
+            public ushort NextWordId { get => nextWordId; }
+            public byte DepthLevel { get => depthLevel; }
+            public uint Count { get => count; set => count = value; }
+
+            public void Increase()
             {
-                Console.WriteLine("{0} - {1} - {2}", letter, following, depth);
+                count++;
+            }
+
+            public bool Matches(ushort wordId, ushort nextWordId, byte depthLevel)
+            {
+                return WordId == wordId && NextWordId == nextWordId && DepthLevel == depthLevel;
+            }
+
+            public bool Matches(ushort wordId, byte depthLevel)
+            {
+                return WordId == wordId && DepthLevel == depthLevel;
             }
         }
 
-        readonly private struct Probability
+        readonly private List<ProbabilityPair> table = new();
+
+        public void Print()
         {
-            readonly private LettersCount counts;
-            private bool LetterExists(char letter) => counts.ContainsKey(letter) && counts[letter] > 0;
-
-            public void Print()
+            foreach (var pair in table)
             {
-                foreach (KeyValuePair<char, long> pair in counts)
-                    Console.Write("{0}={1} ", pair.Key, pair.Value);
-                Console.WriteLine();
-            }
+                string word = words[pair.WordId];
+                string nextWord = words[pair.NextWordId];
+                byte depthLevel = pair.DepthLevel;
+                uint count = pair.Count;
 
-            public void AddLetter(char letter)
-            {
-                if (LetterExists(letter)) counts[letter]++;
-                else counts[letter] = 1;
-            }
-
-            public Probability()
-            {
-                counts = new();
-            }
-
-            public LettersCount GetFollowingLetters()
-            {
-                return new(counts);
+                Console.WriteLine($"{word}({depthLevel}) -> {nextWord} | {count}");
             }
         }
 
-        readonly private struct DepthLevels
+        public void CreateTable(string[] corpus, int maxDepth)
         {
-            readonly private Dictionary<int, Probability> depthLevels;
-            private bool LevelExists(int depth) => depthLevels.ContainsKey(depth);
-
-            public void Print()
+            for (int elId = 0; elId < corpus.Length; elId++)
             {
-                foreach (KeyValuePair<int, Probability> level in depthLevels)
+                for (byte depthLevel = 1; (depthLevel <= maxDepth) && (elId + depthLevel < corpus.Length); depthLevel++)
                 {
-                    Console.Write("{0} -> ", level.Key);
-                    level.Value.Print();
+                    string word = corpus[elId];
+                    string nextWord = corpus[elId + depthLevel];
+                    Add(word, nextWord, depthLevel);
                 }
-                Console.WriteLine();
-            }
-
-            public void AddDepthLevel(int depth, char letter)
-            {
-                if (!LevelExists(depth))
-                    depthLevels[depth] = new Probability();
-                depthLevels[depth].AddLetter(letter);
-            }
-
-            public DepthLevels()
-            {
-                depthLevels = new();
-            }
-
-            public Probability GetNextProbability(char letter, int depth)
-            {
-                return depthLevels[depth];
-            }
-
-            public LettersCount GetFollowingLettersFromDepth(int depth)
-            {
-                if (depthLevels.ContainsKey(depth))
-                    return depthLevels[depth].GetFollowingLetters();
-                else return new();
             }
         }
 
-        readonly private struct ProbabilityTable
+        public void CreateTable(string corpus, string separator, int maxDepth)
         {
-            readonly private Dictionary<char, DepthLevels> table;
-            private bool PairExists(Pair pair) => table.ContainsKey(pair.letter);
+            CreateTable(new Regex(separator).Split(corpus), maxDepth);
+        }
 
-            public void Print()
+        public void WriteToFile(string outputPath)
+        {
+            using StreamWriter writer = new(outputPath, true);
+            foreach (var pair in table)
             {
-                foreach (KeyValuePair<char, DepthLevels> letter in table)
+                string word = words[pair.WordId];
+                string nextWord = words[pair.WordId];
+                byte depthLevel = pair.DepthLevel;
+                uint count = pair.Count;
+
+                Console.WriteLine($"{word} {nextWord} {depthLevel} {count}");
+            }
+        }
+
+        private int GetPairId(ushort wordId, ushort nextWordId, byte depthLevel)
+        {
+            for (int id = 0; id < table.Count; id++)
+            {
+                var pair = table[id];
+                bool matched = pair.Matches(wordId, nextWordId, depthLevel);
+                if (matched) return id;
+            }
+            return -1;
+        }
+
+        private ProbabilityPair GetPair(ushort wordId, ushort nextWordId, byte depthLevel)
+        {
+            int pairId = GetPairId(wordId, nextWordId, depthLevel);
+            return table[pairId];
+        }
+
+        private void Add(string word, string nextWord, byte depthLevel)
+        {
+            if (!words.Contains(word))
+                words.Add(word);
+            if (!words.Contains(nextWord))
+                words.Add(nextWord);
+
+            ushort wordId = (ushort)words.IndexOf(word);
+            ushort nextWordId = (ushort)words.IndexOf(nextWord);
+
+            int pairId = GetPairId(wordId, nextWordId, depthLevel);
+            bool pairExists = pairId != -1;
+
+            if (pairExists) table[pairId].Increase();
+            else table.Add(new(wordId, nextWordId, depthLevel, 1));
+        }
+
+        private List<string> GetPossibleNextWords(string word, byte depthLevel)
+        {
+            List<string> found = new();
+            int wordId = words.IndexOf(word);
+            if (wordId == -1) return found;
+
+            foreach (var pair in table)
+            {
+                if (pair.Matches((ushort)wordId, depthLevel))
                 {
-                    Console.WriteLine("{0} -------", letter.Key);
-                    letter.Value.Print();
+                    string nextWord = words[pair.NextWordId];
+                    found.Add(nextWord);
                 }
-                Console.WriteLine('\n');
             }
+            return found;
+        }
 
-            public void AddPair(Pair pair)
+        private uint GetTotalNextWordCount(in ushort wordId, in byte depthLevel)
+        {
+            uint totalCount = 0;
+            foreach (var pair in table)
             {
-                if (!PairExists(pair))
-                    table[pair.letter] = new DepthLevels();
-                table[pair.letter].AddDepthLevel(pair.depth, pair.following);
-            }
-
-            public ProbabilityTable(List<Pair> pairs)
-            {
-                table = new();
-                foreach (Pair pair in pairs)
-                    AddPair(pair);
-            }
-
-
-            public char GetNext(string sequence)
-            {
-                var possibleLetter = GetPossibleNext(sequence);
-                if (possibleLetter.Count > 0)
-                    return GetRandomLetter(possibleLetter);
-                else return '\0';
-            }
-
-            private static char GetMostLikelyLetter(LettersCount letterCounts)
-            {
-                char mostLikely = '\0';
-                long maxCount = 0;
-
-                foreach (KeyValuePair<char, long> pair in letterCounts)
+                if (pair.Matches(wordId, depthLevel))
                 {
-                    if (pair.Value > maxCount)
-                    {
-                        mostLikely = pair.Key;
-                        maxCount = pair.Value;
-                    }
+                    totalCount += pair.Count;
+                }
+            }
+            return totalCount;
+        }
+
+        private float GetPossibility(in ushort wordId, in ushort nextWordId, in byte depthLevel)
+        {
+            uint totalCount = GetTotalNextWordCount(wordId, depthLevel);
+            var pair = GetPair(wordId, nextWordId, depthLevel);
+
+            return 100 * pair.Count / totalCount;
+        }
+
+        private string GetRandomNextWordId(string word, byte depthLevel)
+        {
+            var random = new Random();
+            List<string> possibleNextWords = GetPossibleNextWords(word, depthLevel);
+            int id = random.Next(possibleNextWords.Count);
+            return possibleNextWords[id];
+        }
+
+        public List<string> Generate(byte amount = 1, byte maxDepth = 1)
+        {
+            List<string> generated = new() { GetRandomWord() };
+
+            for (byte i = 0; i < amount; i++)
+            {
+                var lastWords = generated.TakeLast(maxDepth);
+                var possibleNextWords = GetPossibleNextWords(lastWords.Last(), 1);
+
+                if (!possibleNextWords.Any())
+                {
+                    generated.Add(GetRandomWord());
+                    continue;
                 }
 
-                Console.WriteLine($"From this dictionary: {StringifyLetterCounts(letterCounts)}");
-                Console.WriteLine($"Chosen '{mostLikely}'");
-                return mostLikely;
-            }
+                for (byte depth = 2; depth <= lastWords.Count(); depth++)
+                {
+                    string word = lastWords.ElementAt(depth);
+                    var deeperNextWords = GetPossibleNextWords(word, depth);
+                    var nextStepWords = possibleNextWords.Intersect(deeperNextWords);
 
-            private static char GetRandomLetter(LettersCount letterCounts)
-            {
+                    if (nextStepWords.Any()) possibleNextWords = new(nextStepWords);
+                    else break;
+                }
+
                 Random random = new();
-                return letterCounts.ElementAt(random.Next(0, letterCounts.Count)).Key;
+                int id = random.Next(possibleNextWords.Count);
+                generated.Add(possibleNextWords[id]);
             }
 
-            private LettersCount GetPossibleNext(string sequence)
-            {
-                int maxDepth = sequence.Length - 1;
-                int depth = 0;
-                var letterCounts = GetFollowingLettersFromDepth(sequence[maxDepth], depth);
-
-                for (int i = maxDepth - 1; i >= 0; i--)
-                {
-                    var nextLevelLetterCounts = GetFollowingLettersFromDepth(sequence[i], depth++);
-                    var remains = SubstractLetterCounts(letterCounts, nextLevelLetterCounts);
-
-                    if (remains.Count == 0) break;
-                    letterCounts = new(remains);
-                }
-
-                return letterCounts;
-            }
-
-            private static string StringifyLetterCounts(LettersCount letterCounts)
-            {
-                string stringified = "";
-                foreach (KeyValuePair<char, long> pair in letterCounts)
-                {
-                    stringified += $"\t\t{pair.Key}={pair.Value}\n";
-                }
-                return stringified;
-            }
-
-            private LettersCount GetFollowingLettersFromDepth(char letter, int depth)
-            {
-                if (table.ContainsKey(letter))
-                    return table[letter].GetFollowingLettersFromDepth(depth);
-                else return new();
-            }
-
-            private static LettersCount SumLetterCounts(LettersCount one, LettersCount other)
-            {
-                foreach (KeyValuePair<char, long> pair in other)
-                {
-                    if (one.ContainsKey(pair.Key)) one[pair.Key] += pair.Value;
-                    else one[pair.Key] = pair.Value;
-                }
-                return one;
-            }
-
-            private static LettersCount SubstractLetterCounts(LettersCount one, LettersCount other)
-            {
-                List<char> banned = new() { '\n', '\t' };
-                LettersCount final = new();
-                foreach (KeyValuePair<char, long> pair in other)
-                {
-                    if (!one.ContainsKey(pair.Key) || !other.ContainsKey(pair.Key)) continue;
-                    long count = Math.Min(one[pair.Key], other[pair.Key]);
-                    if (count > 0) final.Add(pair.Key, count);
-                }
-                return final;
-            }
+            return generated;
         }
 
-        ProbabilityTable table = new();
-
-        public void CreateChainFromFile(string path, int depth)
+        private string GetRandomWord()
         {
-            using StreamReader reader = new(path);
-            string text = reader.ReadToEnd();
-            CreateFromString(text, depth);
-        }
-
-        public void CreateFromString(string corpus, int depth)
-        {
-            List<Pair> pairs = CreatePairs(corpus, depth);
-            table = new ProbabilityTable(pairs);
-        }
-
-        private static List<Pair> CreatePairs(in string source, in int maxDepth)
-        {
-            List<Pair> pairs = new();
-            for (int elId = 0; elId < source.Length; elId++)
-            {
-                for (int nextId = elId + 1; (nextId - elId <= maxDepth) && (nextId < source.Length); nextId++)
-                {
-                    int depth = nextId - elId - 1;
-                    char element = source[elId];
-                    char following = source[nextId];
-                    pairs.Add(new Pair(element, following, depth));
-                }
-            }
-            return pairs;
-        }
-
-        public string ContinueSequence(string start, int count, int depth = 0)
-        {
-            string continued = "";
-
-            for (int i = 0; i < count; i++)
-            {
-                string sequence = start + continued;
-                bool isFit = (sequence.Length > depth);
-                int startIndex = (!isFit) ? 0 : sequence.Length - depth - 1;
-                int length = (!isFit) ? sequence.Length : depth;
-
-                string lastSequence = sequence.Substring(startIndex, length);
-                continued += table.GetNext(lastSequence);
-            }
-
-            return continued;
-        }
-
-        public void SerializeToFile(string outputPath)
-        {
-            string json = JsonSerializer.Serialize(table);
-            using StreamWriter outputFile = new(outputPath);
-            outputFile.Write(json);
-            Console.WriteLine(json);
-            table.Print();
+            Random random = new();
+            int totalWordsCount = words.Count;
+            int randomWordId = random.Next(totalWordsCount);
+            return words[randomWordId];
         }
     }
 }

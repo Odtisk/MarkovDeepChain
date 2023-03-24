@@ -7,16 +7,16 @@ namespace Program
 {
     class Program
     {
+
         static void Main(string[] args)
         {
-            const int DEPTH = 100;
-            var MDC = new MarkovDeepChain();
-            //MDC.CreateChainFromFile("war.txt", DEPTH);
+            MarkovDeepChain MDC = new();
+            MDC.CreateTable("mama myla ramu, ramu myla mama. papa liubit mamu. mama liubit papu. papa gde?", " ", 2);
 
-            string start = "Иисус сказал им: истинно, истинно вам говорю, ";
-            MDC.CreateFromString("Кришна шнобель льёт ебать батя я", DEPTH);
-            string continued = MDC.ContinueSequence(start, 50, DEPTH);
-            Console.WriteLine($"Result: {start}{continued}");
+            foreach (string word in MDC.Generate(10))
+            {
+                Console.Write($"{word} ");
+            }
         }
     }
 
